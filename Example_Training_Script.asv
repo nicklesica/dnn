@@ -1,0 +1,83 @@
+clear all;startup
+
+nn_raw_root = 'Z:\GCloud';
+nn_mua_root = 'Z:\mua_db';
+nn_net_root = 'Z:\GCloud\models';
+nn_su_root = fullfile(dropbox_dir,'Nick\Other\IC_Database\All_1ms');
+nn_frame_root = 'E:\Frames';
+
+clear pnet options
+
+pnet.data_script = 'nn_Train_Sound_To_All_MUA_Data_Script';
+pnet.param_script = 'nn_Train_Sound_To_All_MUA_Param_Script';
+pnet.arch_script = 'Network_Def_IC';
+
+% TRAINING
+pnet.n_epochs = 10;
+pnet.mini_batch_size = 64;
+pnet.init_learn = 1e-4;
+
+% GOOD CHANNEL CRITERION
+pnet.good_cc = sqrt(0.05);
+
+% SETUP INPUT AND OUTPUT
+eval(pnet.data_script)
+
+% IDENTIFY GOOD CHANNELS
+if pnet.good_cc,
+    
+    clear cc_trials
+    
+    test_ds = nn_My_PCA_Datastore_Current(pnet.output_test_files,pnet);
+    test_ds_2 = nn_My_PCA_Datastore_Current(pnet.output_test_files_2,pnet);
+    
+    reset(test_ds);
+    test = tall(test_ds);
+    test = gather(test);
+    
+    reset(test_ds_2);
+    test_2 = tall(test_ds_2);
+    test_2 = gather(test_2);
+    
+    for i_chan = 1:size(test,2),
+        cc_trials(i_chan) = corr(test(:,i_chan),test_2(:,i_chan));
+    end
+    
+    pnet.ix_output_chans = find(cc_trials>pnet.good_cc);
+    
+    clear test_ds test_ds_2 test test_2
+    
+end
+
+% SETUP DATASTORES
+clear train_ds test_ds test_ds_2
+train_ds = nn_My_Regression_Datastore_Current(pnet.input_train_files,pnet.output_train_files,pnet);
+test_ds = nn_My_Regression_Datastore_Current(pnet.input_test_files,pnet.output_test_files,pnet);
+test_ds_2 = nn_My_Regression_Datastore_Current(pnet.input_test_files_2,pnet.output_test_files_2,pnet);
+
+% SETUP NETWORK
+eval(pnet.param_script)
+
+n_bottleneck = 8;
+
+pnet.n_bottleneck = n_bottleneck;
+pnet.name = sprintf('%s_bottleneck_%d',pnet.output_dates{1}(1:6),i_net);
+
+eval(pnet.arch_script)
+
+pnet.check_dir = fullfile(nn_raw_root,'Models',pnet.name);
+mkdir(pnet.check_dir)
+copyfile(strcat(mfilename('fullpath'),'.m'),fullfile(pnet.check_dir,'Experiment_Script.m'));
+
+options = trainingOptions("adam", ...
+    "MaxEpochs",pnet.n_epochs, ...
+    "InitialLearnRate",pnet.init_learn,...
+    "MiniBatchSize",pnet.mini_batch_size, ...
+    "Shuffle","every-epoch", ...
+    "Verbose",1, ...
+    "CheckpointPath",pnet.check_dir);
+
+save(fullfile(pnet.check_dir,'Parameters'),'pnet');
+
+reset(gpuDevice(1))
+trainNetwork(train_ds,graph,options);
